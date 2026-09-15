@@ -1,0 +1,15 @@
+# Loaded by `caddy validate` in the build, and nowhere else. It proves the
+# binary can parse and load a DNS provider directive, which a build succeeding
+# does not prove on its own.
+{
+	email admin@example.org
+	# desec takes a block with a token subdirective, not a bare argument:
+	# github.com/caddy-dns/desec module.go, UnmarshalCaddyfile doc comment.
+	acme_dns desec {
+		token {env.ACME_DNS_TOKEN}
+	}
+}
+
+smoke.example.org {
+	respond "ok"
+}

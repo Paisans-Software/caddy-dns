@@ -1,0 +1,2 @@
+# Nothing built lands here; the image lives in the registry.
+*.tar
