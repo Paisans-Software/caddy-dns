@@ -14,8 +14,11 @@ ARG CADDY_VERSION
 
 FROM caddy:${CADDY_VERSION}-builder AS builder
 ARG CADDY_VERSION
-# The explicit version matters: `xcaddy build` with no argument builds Caddy
-# from master, which would not be the version this image is tagged as.
+# The explicit version matters: `xcaddy build` with no argument builds the
+# latest stable Caddy release, not necessarily the version this image is
+# tagged as, since the tag comes from the version resolved at build time.
+# xcaddy README, `xcaddy build [<caddy_version>]`: "defaults to CADDY_VERSION
+# env variable or latest".
 RUN xcaddy build "v${CADDY_VERSION}" \
       --with github.com/caddy-dns/cloudflare \
       --with github.com/caddy-dns/desec
