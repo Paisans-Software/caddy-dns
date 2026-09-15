@@ -172,17 +172,29 @@ jobs:
           ref: develop
 
       - name: Point the default at the new digest
+        id: bump
         env:
           VERSION: ${{ needs.decide.outputs.version }}
           DIGEST: ${{ needs.build.outputs.digest }}
         run: |
           set -euo pipefail
-          reference="ghcr.io/paisans-software/caddy:${VERSION}@${DIGEST}"
           file=internal/acme/acme.go
+          if [ ! -f "$file" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "$file does not exist in the toolkit yet, nothing to propose"
+            exit 0
+          fi
+          reference="ghcr.io/paisans-software/caddy:${VERSION}@${DIGEST}"
           sed -i -E "s|ghcr\.io/paisans-software/caddy:[^\"]*|${reference}|" "$file"
-          git diff --exit-code && { echo "nothing changed, not opening a pull request"; exit 0; }
+          if git diff --quiet -- "$file"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "nothing changed, not opening a pull request"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Open the pull request
+        if: steps.bump.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.TOOLKIT_PR_TOKEN }}
           VERSION: ${{ needs.decide.outputs.version }}
