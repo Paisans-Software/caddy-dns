@@ -142,11 +142,10 @@ jobs:
           git config user.name "paisans build"
           git config user.email "noreply@paisans.community"
           git add built.json
-          git commit -m "chore: publish caddy ${{ needs.decide.outputs.version }}
-
-${{ needs.decide.outputs.reason }}
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+          git commit \
+            -m "chore: publish caddy ${{ needs.decide.outputs.version }}" \
+            -m "${{ needs.decide.outputs.reason }}" \
+            -m "Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
           git push
 
       - name: Summarise
