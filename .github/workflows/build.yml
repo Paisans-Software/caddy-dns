@@ -155,3 +155,54 @@ jobs:
             echo ""
             echo "Digest: \`${{ steps.publish.outputs.digest }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  propose:
+    needs: [decide, build]
+    if: needs.decide.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # The toolkit pins this image by digest, because every tag published here
+      # moves. Moving that pin is a human decision: a new Caddy release can
+      # change behaviour, and nothing here knows whether it did. So this opens a
+      # pull request and stops.
+      - uses: actions/checkout@v4
+        with:
+          repository: Paisans-Software/paisans-stack
+          token: ${{ secrets.TOOLKIT_PR_TOKEN }}
+          ref: develop
+
+      - name: Point the default at the new digest
+        env:
+          VERSION: ${{ needs.decide.outputs.version }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          reference="ghcr.io/paisans-software/caddy:${VERSION}@${DIGEST}"
+          file=internal/acme/acme.go
+          sed -i -E "s|ghcr\.io/paisans-software/caddy:[^\"]*|${reference}|" "$file"
+          git diff --exit-code && { echo "nothing changed, not opening a pull request"; exit 0; }
+
+      - name: Open the pull request
+        env:
+          GH_TOKEN: ${{ secrets.TOOLKIT_PR_TOKEN }}
+          VERSION: ${{ needs.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          branch="chore/caddy-${VERSION}-$(date -u +%Y%m%d%H%M)"
+          git config user.name "paisans build"
+          git config user.email "noreply@paisans.community"
+          git checkout -b "$branch"
+          git add internal/acme/acme.go
+          git commit \
+            -m "chore: take caddy ${VERSION}" \
+            -m "Published by Paisans-Software/caddy-dns. The reference is pinned by digest because every tag that repository publishes moves, upstream's included." \
+            -m "Nothing verified that this release behaves the same as the last one. That is what this pull request is for." \
+            -m "Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+          git push -u origin "$branch"
+          body="Published by \`Paisans-Software/caddy-dns\`, smoke tested before publishing: both DNS modules present, and a configuration using one loads."
+          body="$body"$'\n\n'"Pinned by digest because every tag that repository publishes moves."
+          body="$body"$'\n\n'"**Not checked by any machine:** whether this Caddy release changes behaviour a deployment depends on. Read upstream's changelog before merging."
+          body="$body"$'\n\n'"🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+          gh pr create --base develop --head "$branch" \
+            --title "Take Caddy ${VERSION}" \
+            --body "$body"
