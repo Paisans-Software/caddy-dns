@@ -171,6 +171,15 @@ jobs:
           token: ${{ secrets.TOOLKIT_PR_TOKEN }}
           ref: develop
 
+      # The toolkit renders that digest into checked in fixtures, so editing the
+      # source alone produces a change that is correct in one file and red on
+      # the branch it targets. That happened once. Regenerating here is what
+      # makes the proposal mergeable rather than merely accurate.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
       - name: Point the default at the new digest
         id: bump
         env:
@@ -186,12 +195,23 @@ jobs:
           fi
           reference="ghcr.io/paisans-software/caddy:${VERSION}@${DIGEST}"
           sed -i -E "s|ghcr\.io/paisans-software/caddy:[^\"]*|${reference}|" "$file"
-          if git diff --quiet -- "$file"; then
+          if git diff --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "nothing changed, not opening a pull request"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          go test ./internal/render/ -update
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      # A proposal that does not build is worse than none: it costs a reviewer
+      # the time to discover what the machine could have. This is the gate that
+      # was missing, and it fails the job rather than opening anything.
+      - name: Prove the toolkit still passes with the new digest
+        if: steps.bump.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          go vet ./...
+          go test ./... -count=1
 
       - name: Open the pull request
         if: steps.bump.outputs.changed == 'true'
@@ -204,7 +224,7 @@ jobs:
           git config user.name "paisans build"
           git config user.email "noreply@paisans.community"
           git checkout -b "$branch"
-          git add internal/acme/acme.go
+          git add -A
           git commit \
             -m "chore: take caddy ${VERSION}" \
             -m "Published by Paisans-Software/caddy-dns. The reference is pinned by digest because every tag that repository publishes moves, upstream's included." \
@@ -213,6 +233,7 @@ jobs:
           git push -u origin "$branch"
           body="Published by \`Paisans-Software/caddy-dns\`, smoke tested before publishing: both DNS modules present, and a configuration using one loads."
           body="$body"$'\n\n'"Pinned by digest because every tag that repository publishes moves."
+          body="$body"$'\n\n'"The rendered fixtures were regenerated and \`go vet\` plus \`go test ./...\` passed against this digest before this was opened. A failure there fails the build job instead of opening a pull request."
           body="$body"$'\n\n'"**Not checked by any machine:** whether this Caddy release changes behaviour a deployment depends on. Read upstream's changelog before merging."
           body="$body"$'\n\n'"🤖 Generated with [Claude Code](https://claude.com/claude-code)"
           gh pr create --base develop --head "$branch" \
