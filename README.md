@@ -57,8 +57,10 @@ Nothing is published until the built binary answers `caddy list-modules` with
 both providers and loads a configuration that uses one. A build can succeed and
 still produce a binary that cannot serve the configuration a deployment renders.
 
-`built.json` records what the last successful build produced. It is written by
-the workflow, not by hand.
+There is no state file. What was last published, when, and at which digest are
+all recorded by the registry, so the build reads them from there. That keeps one
+copy of the truth, and it is why nothing in this repository writes to `main`:
+the branch is merged into, never pushed to.
 
 ## Adding a provider
 

@@ -21,7 +21,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
   packages: write
 
 env:
@@ -36,8 +36,12 @@ jobs:
       version: ${{ steps.decide.outputs.version }}
       reason: ${{ steps.decide.outputs.reason }}
     steps:
-      - uses: actions/checkout@v4
-
+      # State lives in the registry, not in this repository. The package already
+      # records what was published, when, and at which digest, so a committed
+      # state file would be a second copy able to disagree with it. Writing that
+      # file back was also the only reason anything here pushed to a branch, so
+      # reading the registry instead is what lets main be a branch nothing
+      # pushes to.
       - id: decide
         env:
           GH_TOKEN: ${{ github.token }}
@@ -45,23 +49,32 @@ jobs:
         run: |
           set -euo pipefail
           version=$(gh api repos/caddyserver/caddy/releases/latest -q .tag_name | sed 's/^v//')
-          built=$(jq -r .caddy_version built.json)
-          built_at=$(jq -r .built_at built.json)
-          age_days=$(( ( $(date -u +%s) - $(date -u -d "$built_at" +%s) ) / 86400 ))
-
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          published=$(gh api "/orgs/${{ github.repository_owner }}/packages/container/caddy/versions" \
+            --jq '[.[] | {created: .created_at, tags: .metadata.container.tags}]
+                  | map(select(.tags | length > 0)) | first // empty' 2>/dev/null || true)
+
           if [ "$FORCE" = "true" ]; then
             echo "build=true" >> "$GITHUB_OUTPUT"
             echo "reason=forced by hand" >> "$GITHUB_OUTPUT"
-          elif [ "$version" != "$built" ]; then
+          elif [ -z "$published" ]; then
             echo "build=true" >> "$GITHUB_OUTPUT"
-            echo "reason=caddy $built -> $version" >> "$GITHUB_OUTPUT"
-          elif [ "$age_days" -ge "$MAX_AGE_DAYS" ]; then
-            echo "build=true" >> "$GITHUB_OUTPUT"
-            echo "reason=last build is $age_days days old" >> "$GITHUB_OUTPUT"
+            echo "reason=nothing published yet, building caddy $version" >> "$GITHUB_OUTPUT"
           else
-            echo "build=false" >> "$GITHUB_OUTPUT"
-            echo "reason=caddy $version already built $age_days days ago" >> "$GITHUB_OUTPUT"
+            built=$(printf '%s' "$published" | jq -r '.tags[] | select(test("^[0-9]+[.][0-9]+[.][0-9]+$"))' | head -1)
+            built_at=$(printf '%s' "$published" | jq -r .created)
+            age_days=$(( ( $(date -u +%s) - $(date -u -d "$built_at" +%s) ) / 86400 ))
+            if [ "$version" != "$built" ]; then
+              echo "build=true" >> "$GITHUB_OUTPUT"
+              echo "reason=caddy $built -> $version" >> "$GITHUB_OUTPUT"
+            elif [ "$age_days" -ge "$MAX_AGE_DAYS" ]; then
+              echo "build=true" >> "$GITHUB_OUTPUT"
+              echo "reason=last build is $age_days days old" >> "$GITHUB_OUTPUT"
+            else
+              echo "build=false" >> "$GITHUB_OUTPUT"
+              echo "reason=caddy $version already built $age_days days ago" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - run: echo "${{ steps.decide.outputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
@@ -130,23 +143,6 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             CADDY_VERSION=${{ needs.decide.outputs.version }}
-
-      - name: Record what was published
-        run: |
-          set -euo pipefail
-          jq -n \
-            --arg version "${{ needs.decide.outputs.version }}" \
-            --arg built_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg digest "${{ steps.publish.outputs.digest }}" \
-            '{caddy_version: $version, built_at: $built_at, digest: $digest}' > built.json
-          git config user.name "paisans build"
-          git config user.email "noreply@paisans.community"
-          git add built.json
-          git commit \
-            -m "chore: publish caddy ${{ needs.decide.outputs.version }}" \
-            -m "${{ needs.decide.outputs.reason }}" \
-            -m "Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
-          git push
 
       - name: Summarise
         run: |
