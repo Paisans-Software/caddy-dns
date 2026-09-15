@@ -1,0 +1,158 @@
+# Publishes ghcr.io/paisans-software/caddy.
+#
+# This is a poll, not an event. GitHub Actions cannot trigger on another
+# repository's release, so a schedule asks upstream what the current version is
+# and compares it with what we last built.
+#
+# Two conditions build. A new upstream version is the obvious one. An image
+# older than thirty days is the other: upstream rebuilds its own tags when
+# their base image gets a security update, and an image that only tracked Caddy
+# releases would sit unpatched through a quiet month.
+name: build
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Build even when nothing changed"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE: ghcr.io/paisans-software/caddy
+  MAX_AGE_DAYS: 30
+
+jobs:
+  decide:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      version: ${{ steps.decide.outputs.version }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          version=$(gh api repos/caddyserver/caddy/releases/latest -q .tag_name | sed 's/^v//')
+          built=$(jq -r .caddy_version built.json)
+          built_at=$(jq -r .built_at built.json)
+          age_days=$(( ( $(date -u +%s) - $(date -u -d "$built_at" +%s) ) / 86400 ))
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$FORCE" = "true" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "reason=forced by hand" >> "$GITHUB_OUTPUT"
+          elif [ "$version" != "$built" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "reason=caddy $built -> $version" >> "$GITHUB_OUTPUT"
+          elif [ "$age_days" -ge "$MAX_AGE_DAYS" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "reason=last build is $age_days days old" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "reason=caddy $version already built $age_days days ago" >> "$GITHUB_OUTPUT"
+          fi
+
+      - run: echo "${{ steps.decide.outputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: decide
+    if: needs.decide.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Built once for the host architecture and smoke tested before anything
+      # is pushed. A multi architecture push happens only after that passes.
+      - name: Build for smoke testing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: caddy-dns:smoke
+          build-args: |
+            CADDY_VERSION=${{ needs.decide.outputs.version }}
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          docker run --rm caddy-dns:smoke caddy version
+          docker run --rm caddy-dns:smoke caddy list-modules | grep -qx dns.providers.cloudflare
+          docker run --rm caddy-dns:smoke caddy list-modules | grep -qx dns.providers.desec
+          docker run --rm -e ACME_DNS_TOKEN=smoke-not-a-secret \
+            -v "$PWD/smoke:/smoke:ro" caddy-dns:smoke \
+            caddy validate --config /smoke/Caddyfile --adapter caddyfile
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        run: |
+          set -euo pipefail
+          v="${{ needs.decide.outputs.version }}"
+          major="${v%%.*}"
+          minor="${v%.*}"
+          {
+            echo "tags<<EOF"
+            echo "$IMAGE:$v"
+            echo "$IMAGE:$minor"
+            echo "$IMAGE:$major"
+            echo "$IMAGE:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        id: publish
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            CADDY_VERSION=${{ needs.decide.outputs.version }}
+
+      - name: Record what was published
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg version "${{ needs.decide.outputs.version }}" \
+            --arg built_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg digest "${{ steps.publish.outputs.digest }}" \
+            '{caddy_version: $version, built_at: $built_at, digest: $digest}' > built.json
+          git config user.name "paisans build"
+          git config user.email "noreply@paisans.community"
+          git add built.json
+          git commit -m "chore: publish caddy ${{ needs.decide.outputs.version }}
+
+${{ needs.decide.outputs.reason }}
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+          git push
+
+      - name: Summarise
+        run: |
+          {
+            echo "Published \`$IMAGE:${{ needs.decide.outputs.version }}\`"
+            echo ""
+            echo "Digest: \`${{ steps.publish.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
