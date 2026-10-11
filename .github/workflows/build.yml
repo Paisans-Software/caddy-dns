@@ -108,6 +108,8 @@ jobs:
           docker run --rm -e ACME_DNS_TOKEN=smoke-not-a-secret \
             -v "$PWD/smoke:/smoke:ro" caddy-dns:smoke \
             caddy validate --config /smoke/Caddyfile --adapter caddyfile
+          label=$(docker inspect -f '{{ index .Config.Labels "org.opencontainers.image.version" }}' caddy-dns:smoke)
+          test "$label" = "${{ needs.decide.outputs.version }}"
 
       - uses: docker/login-action@v3
         with:
