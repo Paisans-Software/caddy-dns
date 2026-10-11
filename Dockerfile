@@ -25,3 +25,9 @@ RUN xcaddy build "v${CADDY_VERSION}" \
 
 FROM caddy:${CADDY_VERSION}-alpine
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+
+# The tags on this image move, so a digest on its own does not say which Caddy
+# it holds. The label does: a deployment tool that recorded a digest can read
+# the exact version back from it rather than guess from a tag.
+ARG CADDY_VERSION
+LABEL org.opencontainers.image.version="${CADDY_VERSION}"

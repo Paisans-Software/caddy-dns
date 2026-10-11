@@ -43,8 +43,12 @@ ghcr.io/paisans-software/caddy:2.11.4
 tag when its base image gets a security update, so `2.11.4` is a name for the
 newest build of that version rather than for a fixed set of bytes.
 
-**Pin by digest if you need reproducibility.** `paisans-stack` does, and the
-build opens a pull request there to move that digest forward.
+**Pin by digest if you need reproducibility.**
+
+`paisans-stack` follows `:2`. Each time it plans an apply it resolves that tag
+to a digest, deploys the digest, and records which one it deployed. A new build
+here reaches a deployment on its next apply, and the record says exactly which
+bytes are running.
 
 ## How it stays current
 
